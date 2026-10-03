@@ -1,0 +1,15 @@
+# never commit game data or build output
+*.wbfs
+*.iso
+*.carc
+*.u8
+*.dol
+*.brres
+*.tex0
+work/
+output/
+dist/
+designs/
+tools/
+__pycache__/
+.DS_Store
