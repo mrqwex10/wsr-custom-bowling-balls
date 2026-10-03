@@ -718,6 +718,118 @@ DESIGNS['diamond'] = (diamond, dict(strength=0.35, sigma=2, crest=0.6, crest_col
 LABELS.update({'gold': 'Gold (1500)', 'diamond': 'Prismatic Diamond (2000)'})
 
 
+
+# ================================================================== Prismatic Diamond v2
+def _spectrum(x):
+    """0..1 -> red, orange, yellow, green, cyan, blue, violet (vivid)."""
+    return np.clip(np.stack([0.5 + 0.5 * np.cos(TAU * (x * 0.85 + o)) for o in (0.0, 0.67, 0.33)], -1) * 1.25 - 0.1, 0, 1)
+
+
+def _gem_icon(size=512):
+    """Brilliant-cut diamond icon: outline + facet lines (mask image)."""
+    from PIL import Image, ImageDraw, ImageFilter
+    im = Image.new('L', (size, size), 0)
+    dr = ImageDraw.Draw(im)
+    s_ = size
+    P = lambda x, y: (x * s_, y * s_)
+    crown_top, girdle, culet = 0.24, 0.42, 0.86
+    pts = [P(0.30, crown_top), P(0.70, crown_top), P(0.88, girdle), P(0.50, culet), P(0.12, girdle)]
+    w = int(s_ * 0.028)
+    dr.line(pts + [pts[0]], fill=255, width=w, joint='curve')
+    dr.line([P(0.12, girdle), P(0.88, girdle)], fill=255, width=w)
+    for x0, x1 in ((0.30, 0.22), (0.43, 0.38), (0.57, 0.62), (0.70, 0.78)):
+        dr.line([P(x0, crown_top), P(x1, girdle)], fill=200, width=int(w * 0.7))
+    for x in (0.22, 0.38, 0.62, 0.78):
+        dr.line([P(x, girdle), P(0.50, culet)], fill=200, width=int(w * 0.7))
+    im = im.filter(ImageFilter.GaussianBlur(s_ * 0.004))
+    return np.asarray(im, float) / 255
+
+
+def diamond2(d, t):
+    """Tier 2 (2000): bold, high-contrast prismatic diamond with rainbow comet
+    trails orbiting the ball, shimmering rainbow fire and a glowing gem emblem."""
+    rng = np.random.default_rng(961)
+    pts = _fib_pts(72, 0.55, 963)
+    tilt = pts + 0.7 * rng.normal(size=pts.shape)
+    tilt /= np.linalg.norm(tilt, axis=1, keepdims=True)
+    rnd = rng.uniform(0, 1, len(pts))
+    dots = d.reshape(-1, 3) @ pts.T
+    cell = dots.argmax(1).reshape(d.shape[:2])
+    dist = np.sqrt(np.clip(2 - 2 * dots, 0, None))
+    part = np.partition(dist, 1, axis=1)
+    edge = (part[:, 1] - part[:, 0]).reshape(d.shape[:2])
+    L = np.array([np.cos(TAU * t), 0.45, np.sin(TAU * t)]); L /= np.linalg.norm(L)
+    facing = (tilt[cell] * L).sum(-1)
+    gdir = rng.normal(size=pts.shape)
+    grad_in = ((d - pts[cell]) * gdir[cell]).sum(-1) * 6
+    v = np.clip(0.5 + 0.55 * facing + 0.2 * grad_in, 0, 1)            # strong light/dark swing
+    col = lerp(C(8, 12, 40), C(245, 250, 255), v ** 1.4)
+    # dispersion: the rainbow slides across every facet and races with the light
+    hue = np.mod(facing * 0.9 + rnd[cell] + 0.45 * grad_in + 2 * t, 1.0)
+    fire_amt = np.clip(0.30 + 0.70 * smoothstep(0.15, 0.7, facing), 0, 1) * (0.55 + 0.45 * rnd[cell])
+    col = lerp(col, _spectrum(hue) * (0.45 + 0.6 * v[..., None]), fire_amt * 0.8)
+    edge_glow = np.exp(-(edge / 0.007) ** 2)
+    h = smoothstep(0.0, 0.03, edge)
+    emit = C(220, 235, 255) * edge_glow[..., None] * 0.3
+    # emblem on both sides: bold glowing brilliant-cut icon, rainbow light inside, spinning rainbow halo
+    icon = _gem_icon_bold()
+    em_line = np.maximum(_decal_mask(d, (0, 0, 1), icon[0], 34), _decal_mask(d, (0, 0, -1), icon[0], 34))
+    em_fill = np.maximum(_decal_mask(d, (0, 0, 1), icon[1], 34), _decal_mask(d, (0, 0, -1), icon[1], 34))
+    th = np.arccos(np.clip(np.abs(d[..., 2]), -1, 1))
+    ph = np.arctan2(d[..., 1], d[..., 0] * np.where(d[..., 2] >= 0, 1, -1))
+    col = col * (1 - 0.65 * np.exp(-(th / 0.55) ** 2))[..., None]     # darker field behind the emblem
+    inside = _spectrum(np.mod(d[..., 1] * 1.5 + t, 1.0))
+    emit = emit + inside * em_fill[..., None] * 0.55 + C(255, 255, 255) * em_line[..., None]
+    halo = np.exp(-((th - 0.68) / 0.045) ** 2)
+    emit = emit + _spectrum(np.mod(ph / TAU + t, 1.0)) * halo[..., None] * 0.7
+    # prismatic comet trails: wide rainbow ribbons orbiting the ball
+    for axis, speed, ph0 in [((0.35, 1.0, 0.2), 1, 0.0), ((1.0, -0.3, 0.6), 1, 0.33), ((-0.4, 0.5, 1.0), 2, 0.7)]:
+        N = np.array(axis, float); N /= np.linalg.norm(N)
+        A = np.cross(N, [0.3, 0.1, 1.0]); A /= np.linalg.norm(A)
+        B = np.cross(N, A)
+        off = d @ N
+        beta = np.arctan2(d @ B, d @ A)
+        behind = np.mod(TAU * (ph0 + speed * t) - beta, TAU)          # 0 at the head
+        tail = np.exp(-behind / 2.6) * (behind < TAU * 0.92)
+        width = 0.09 + 0.05 * np.clip(behind / 3, 0, 1)
+        across = np.clip(off / width * 0.5 + 0.5, 0, 1)
+        band = np.exp(-(off / width) ** 4)
+        glow = np.exp(-(off / (width * 2.2)) ** 2) * 0.35
+        emit = emit + _spectrum(across) * (band * tail * 1.4)[..., None] + C(200, 180, 255) * (glow * tail)[..., None]
+        core = np.exp(-((behind / 0.12) ** 2 + (off / 0.05) ** 2))
+        emit = emit + C(255, 255, 255) * core[..., None] * 1.4
+    fp = _sphere_pts(36, 967)
+    tw = np.clip(np.sin(TAU * (t * rng.integers(1, 4, 36) + rng.uniform(0, 1, 36))), 0, 1) ** 5
+    fl = _flares(d, fp, rng.uniform(0.07, 0.15, 36), tw)
+    emit = emit + C(255, 255, 255) * fl[..., None]
+    return np.clip(col, 0, 1), h, emit
+
+
+def _gem_icon_bold(size=512):
+    """(outline mask, fill mask) of a brilliant-cut gem icon."""
+    from PIL import Image, ImageDraw, ImageFilter
+    s_ = size
+    P = lambda x, y: (x * s_, y * s_)
+    top, gird, cul = 0.22, 0.42, 0.88
+    outline = [P(0.29, top), P(0.71, top), P(0.90, gird), P(0.50, cul), P(0.10, gird)]
+    fill = Image.new('L', (s_, s_), 0)
+    ImageDraw.Draw(fill).polygon(outline, fill=255)
+    line = Image.new('L', (s_, s_), 0)
+    dr = ImageDraw.Draw(line)
+    w = int(s_ * 0.045)
+    dr.line(outline + [outline[0]], fill=255, width=w, joint='curve')
+    dr.line([P(0.10, gird), P(0.90, gird)], fill=255, width=w)
+    for x0, x1 in ((0.29, 0.21), (0.43, 0.37), (0.57, 0.63), (0.71, 0.79)):
+        dr.line([P(x0, top), P(x1, gird)], fill=230, width=int(w * 0.6))
+    for x in (0.21, 0.37, 0.63, 0.79):
+        dr.line([P(x, gird), P(0.50, cul)], fill=230, width=int(w * 0.6))
+    blur = ImageFilter.GaussianBlur(s_ * 0.004)
+    return np.asarray(line.filter(blur), float) / 255, np.asarray(fill.filter(blur), float) / 255
+
+
+DESIGNS['diamond'] = (diamond2, dict(strength=0.6, sigma=2, crest=0.5, crest_col=(1, 1, 1)))
+
+
 if __name__ == '__main__':
     names = ORDER if sys.argv[1] == 'all' else sys.argv[1].split(',')
     n = int(sys.argv[2])
