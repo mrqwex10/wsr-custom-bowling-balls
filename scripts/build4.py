@@ -85,6 +85,13 @@ def fill_pro_tiers(brres_d, base, n_base, n_tier, mips, tmp):
     targets = {'WS2_bwl_ball_pro_zbase': (hdr, chains, base_tag),
                'WS2_bwl_ball_pro_zgold': (ghdr, gold, b2.tag(b'BANM', n_tier, PERIOD[n_tier], 0, stride=st)),
                'WS2_bwl_ball_pro_zdia': (dhdr, dia, b2.tag(b'BANM', n_tier, PERIOD[n_tier], 0, stride=st))}
+    if base == 'random':
+        # each player needs their OWN roll: the roll is stamped in the target header,
+        # so give every slot its own small BRAN header (frame 0 only) that points at
+        # the shared frame pool in zbase. (One shared header = every Pro player got
+        # the same orb - fixed in v1.2.)
+        for k in range(1, len(COLORS)):
+            targets[f'WS2_bwl_ball_pro_zbase{k}'] = (hdr, [chains[0]], base_tag)
     for name, (h, ch, tg) in targets.items():
         open(os.path.join(T, name), 'wb').write(b2.make_tex0(h, ch, name, tg))
     for c in COLORS:
@@ -100,11 +107,19 @@ def finalize_tiers(brres_path):
     offs = brres_textures(brres_path)
     b = bytearray(open(brres_path, 'rb').read())
     hdr = {k: offs[f'WS2_bwl_ball_pro_{k}'] for k in ('zbase', 'zgold', 'zdia')}
+    per_slot = {k: offs.get(f'WS2_bwl_ball_pro_zbase{k}') for k in range(1, len(COLORS))}
+    pool = hdr['zbase'] + 0x40
+    for k, o in per_slot.items():
+        if o is not None:                              # per-player roll headers -> shared frame pool
+            assert b[o + 0x30:o + 0x34] == b'BRAN' and o % 32 == 0
+            struct.pack_into('>i', b, o + 0x3C, pool - (o + 0x40))
     for c in COLORS:
         o = offs[f'WS2_bwl_ball_pro_{c}']
         assert b[o:o + 4] == b'TEX0' and b[o + 0x30:o + 0x34] == b'BTIR' and o % 32 == 0
         data = o + 0x40
-        base_rel = hdr['zbase'] - data
+        k = COLORS.index(c)
+        base_hdr = per_slot.get(k) if per_slot.get(k) is not None else hdr['zbase']
+        base_rel = base_hdr - data
         assert base_rel % 32 == 0 and -0x8000 <= base_rel // 32 < 0x8000, base_rel
         struct.pack_into('>hii', b, o + 0x36, base_rel // 32, hdr['zgold'] - data, hdr['zdia'] - data)
     for k, o in hdr.items():

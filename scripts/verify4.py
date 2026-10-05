@@ -98,6 +98,26 @@ def run(label, folder, pro, normal):
                     okall &= ok and g.startswith(want) and err < 8
                     seen.append(k)
                 check(okall, f'Pro slot {n} (P{slot + 1}), tier byte {skill}: {want}, all frames ok')
+    if pro[0] == 'tiers' and pro[1] == 'random':
+        slots = tags.get(b'BTIR', [])
+        m.mu.mem_write(hook.TIER_CFG, bytes(4))
+        bases = set()
+        for off in slots:                                  # each slot must redirect to its own roll header
+            bases.add(off + 0x40 + 32 * struct.unpack_from('>h', arc, off + 0x36)[0])
+        check(len(bases) == 4, f'each Pro player has their own random-orb roll ({len(bases)} separate roll headers)')
+        same = 0
+        for trial in range(12):
+            for b_ in bases:                               # fresh load: clear every stamp
+                m.mu.mem_write(BASE + b_ + 0x36, b'\xff\xff')
+            orbs = []
+            for n, off in enumerate(slots):
+                o = m.texobj(0x81003400 + n * 0x20, BASE + off + 0x40)
+                m.tb = 0x1000 * trial + 37 * n + 5
+                ok, img = shown(o, off)
+                err, g, k = best(img, groups)
+                orbs.append(g)
+            same += len(set(orbs)) == 1
+        check(same <= 1, f'4 Pro players almost never all share an orb ({same}/12 loads identical)')
     normals = [o for mg in (b'BRND', b'BRAN', b'BANM', b'BDBG') for o in tags.get(mg, [])
                if not (pro[0] == 'tiers' and o in sum((tags.get(x, []) for x in (b'BANM', b'BRAN')), []) and
                        arc[o + 0x34:o + 0x36] != arc[o + 0x34:o + 0x36])]
