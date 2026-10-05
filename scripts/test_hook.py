@@ -223,30 +223,43 @@ def main():
     for a_, dsz in ((t, b) for t, b in [(p_[0], len(p_[1])) for p_ in hook.patches()]):
         check(not (a_ <= hook.TIER_CFG < a_ + dsz), f'boot patch at {a_:#x} does not overwrite the tier bytes')
 
-    print('9. skill detector (BDBG)')
-    dd = m.tex0(0x90330000, b'BDBG', count=5, param=0, rel=0)
+    print('7b. random design remembers the image per colour slot (byte 0x34 = slot + 1)')
+    m.mu.mem_write(hook.NORM_IMG, bytes(16))
+    for sl in range(4):
+        base = 0x90200100 + 0x4000 * sl
+        hdr = bytearray(0x40); hdr[0:4] = b'TEX0'
+        hdr[0x30:0x40] = b'BRND' + bytes([sl + 1, 8]) + struct.pack('>HIi', 0xFFFF, STRIDE, 0)
+        m.mu.mem_write(base, bytes(hdr))
+        ok, _ = m.load(m.texobj(0x81003900 + 0x20 * sl, base + 0x40))
+        check(ok and m.r32(hook.NORM_IMG + 4 * sl) == base + 0x40 and m.r16(base + 0x36) < 8, f'slot {sl}: remembered, rolled design {m.r16(base + 0x36)}')
+    print('8b. tier redirect remembers the resolved Pro image per slot (ball trail colour)')
+    imgs = [m.r32(hook.PRO_IMG + 4 * sl) for sl in range(4)]
+    tags = [bytes(m.mu.mem_read(i - 0x10, 4)) if i else None for i in imgs]
+    check(all(i != 0 for i in imgs) and all(t in (b'BANM', b'BRAN', b'BRND') for t in tags), f'PRO_IMG per slot -> tagged images {tags}')
+    print('9. alley theme (BTHM): pool index = current theme, 0 when unknown; Whiteout -> colourway')
+    dd = m.tex0(0x90330000, b'BTHM', count=9, param=0, rel=0)
     o = m.texobj(0x81003700, dd)
-    for skill, b in [(0, 0), (1, 1), (999, 1), (1000, 2), (1499, 2), (1500, 3), (1999, 3), (2000, 4), (2500, 4)]:
-        m.w32(hook.LAST_SKILL, skill)
+    for cur, key, want in [(0, 0xA5, 0), (1, 0xA5, 1), (4, 0xA5, 4), (9, 0xA5, 0), (200, 0xA5, 0), (3, 0x00, 0), (3, 0xA5, 3)]:
+        m.mu.mem_write(hook.THEME_CUR, bytes([cur, key, 0xFF]))
         ok, img3 = m.load(o)
-        check(ok and img3 == (0x94000000 | phys5(dd + b * STRIDE)), f'skill {skill:4d} -> bracket {b}')
-    print('10. diagnostic pages (BPAG)')
-    pg = 0x90340000
-    hdr = bytearray(0x40); hdr[0:4] = b'TEX0'
-    hdr[0x30:0x40] = b'BPAG' + struct.pack('>BBHIi', 3, 26, 180, 4096, 0)
-    m.mu.mem_write(pg, bytes(hdr))
-    o = m.texobj(0x81003800, pg + 0x40)
-    m.w32(hook.CALLS, 7); m.w32(hook.LAST_ANY, 1250); m.w32(hook.LAST_SKILL, 3000)
-    TPP = 180 * 989 * 1024
-    for page, want in [(0, 7), (1, 26 + 12), (2, 52 + 25)]:
-        m.tb = page * TPP + 1000
+        check(ok and img3 == (0x94000000 | phys5(dd + want * STRIDE)), f'theme byte {cur:3d} key {key:02X} -> image {want}')
+    seen = set()
+    for k in range(24):
+        m.mu.mem_write(hook.THEME_CUR, bytes([5, 0xA5, 0xFF]))       # a new visit: colourway re-rolls
+        m.tb = 0x9E3779B97F4A * (k + 3) + 12345 * k
         ok, img3 = m.load(o)
-        check(ok and img3 == (0x94000000 | phys5(pg + 0x40 + want * 4096)), f'page {page} -> image {want}')
-    m.w32(hook.CALLS, 99)
-    m.tb = 3 * TPP + 1000
-    ok, img3 = m.load(o)
-    check(ok and img3 == (0x94000000 | phys5(pg + 0x40 + 25 * 4096)), 'page wraps to 0, big counts clamp to the last image')
-    check(m.r32(hook.ACTIVE) == (m.tb >> 32), 'drawing our ball marks the Bowling-active time')
+        var = m.mu.mem_read(hook.PIN_VAR, 1)[0]
+        ok2, img3b = m.load(o)                                       # ...and then stays
+        seen.add(var)
+        check(ok and ok2 and var < 4 and img3 == img3b == (0x94000000 | phys5(dd + (5 + var) * STRIDE)), f'Whiteout -> colourway {var} (image {5 + var}), kept') if k < 3 else None
+    check(seen == {0, 1, 2, 3}, f'all 4 colourways come up ({sorted(seen)})')
+    print('10. Whiteout far-lane pins (BPIN) use the same colourway')
+    pp = m.tex0(0x90340000, b'BPIN', count=4, param=0, rel=0)
+    o2 = m.texobj(0x81003800, pp)
+    for var in range(4):
+        m.mu.mem_write(hook.PIN_VAR, bytes([var]))
+        ok, img3 = m.load(o2)
+        check(ok and img3 == (0x94000000 | phys5(pp + var * STRIDE)), f'colourway {var} -> far-lane pin image {var}')
     print('\nALL PASS' if not fails else f'\n{fails} FAILURES')
     sys.exit(1 if fails else 0)
 

@@ -77,7 +77,10 @@ def fill_pro_tiers(brres_d, base, n_base, n_tier, mips, tmp):
         base_tag = b'BRAN' + struct.pack('>BBHHHi', len(ORDER), n_base, 0xFFFF, PERIOD[n_base], len(chains[0]) >> 5, 0)
     else:
         hdr, chains = orb_frames(base, n_base, tmp, mips)
-        base_tag = b2.tag(b'BANM', n_base, PERIOD[n_base], 0, stride=len(chains[0]))
+        base_tag = bytearray(b2.tag(b'BANM', n_base, PERIOD[n_base], 0, stride=len(chains[0])))
+        assert n_base < 256
+        base_tag[4] = ORDER.index(base) + 1                    # orb id + 1 (the ball trail takes its colour)
+        base_tag = bytes(base_tag)
     ghdr, gold = orb_frames('gold', n_tier, tmp, mips)
     dhdr, dia = orb_frames('diamond', n_tier, tmp, mips)
     assert len(gold[0]) == len(chains[0]) == len(dia[0])
@@ -170,7 +173,8 @@ def fill_normal(kind, brres_d, spec, tmp):
     prefix = 'WS2_bwl_ball_pro_' if kind == 'pro' else 'WS2_bwl_ball_'
     if spec[0] == 'brnd':
         hdr, chains = pool_nomip(spec[1], tmp)
-        mk = lambda k: b2.tag(b'BRND', len(chains), 0xFFFF, k, stride=len(chains[0]))
+        assert len(chains) < 256
+        mk = lambda k: bytes([*b'BRND', k + 1]) + b2.tag(b'BRND', len(chains), 0xFFFF, k, stride=len(chains[0]))[5:]   # 0x34 = slot + 1
     elif spec[0] == 'bdbg':
         hdr, chains = pool_nomip(spec[1], tmp)
         mk = lambda k: b'BDBG' + struct.pack('>HHIi', len(chains), 0, len(chains[0]), k)
@@ -211,6 +215,38 @@ def finalize_slots(brres_path, magics=(b'BANM', b'BRND', b'BRAN', b'BDBG', b'BPA
     open(brres_path, 'wb').write(b)
 
 
+PIN_BRRES = 'G3D/WS2_bwl_pin.brres'
+
+
+def add_theme_pins(common_d, tmp):
+    """Live pins follow the alley theme: 'bwg_pin' becomes a BTHM-tagged TEX0 whose pool is
+    [stock, Cosmic, Synthwave, Aurora, Lava, Whiteout] (hook picks THEME_CUR, 0 = stock)."""
+    import build_alley as BA
+    import make_alley as M
+    brres = os.path.join(common_d, PIN_BRRES)
+    d = brres + '.d'
+    v1.run(v1.WSZST, 'extract', brres, '-d', d, '-q')
+    path = os.path.join(d, b2.TEXDIR, 'bwg_pin')
+    orig = open(path, 'rb').read()
+    w, h, fmt, imgs = BA.tex0_info(path)
+    size = struct.unpack_from('>I', orig, 4)[0]
+    stock = orig[0x40:size]
+    datas = [stock]
+    looks = [(t, None) for t, _, _ in BA.THEMES] + [('whiteout', w) for w in list(M.WHITEOUT_LIVE)[1:]]
+    assert BA.THEMES[hook.WHITEOUT - 1][0] == 'whiteout' and len(M.WHITEOUT_LIVE) == hook.PIN_VARIANTS
+    for theme, way in looks:                 # pool: stock, 5 themes (Whiteout = onyx), Whiteout navy/garnet/forest
+        _, data = BA.encode(M.live_pin(theme, way), fmt, imgs, tmp, f'pin_{theme}_{way}')
+        assert len(data) == len(stock), (theme, len(data), len(stock))
+        datas.append(data)
+    tag = b'BTHM' + struct.pack('>HHIi', len(datas), 0, len(stock), 0)
+    open(path, 'wb').write(b2.make_tex0(orig[:0x40], datas, 'bwg_pin', tag))
+    v1.run(v1.WSZST, 'create', d, '-d', brres, '-o', '-q')
+    shutil.rmtree(d)
+    o = brres_textures(brres)['bwg_pin']
+    b = open(brres, 'rb').read()
+    assert b[o + 0x30:o + 0x34] == b'BTHM' and o % 32 == 0, hex(o)
+
+
 def build_variant(folder, pro, normal):
     work = os.path.join(v1.BUILD, folder)
     kinds = [k for k, s in (('pro', pro), ('normal', normal)) if s[0] != 'stock']
@@ -231,13 +267,45 @@ def build_variant(folder, pro, normal):
             finalize_tiers(brres)
         else:
             finalize_slots(brres)
+    add_theme_pins(os.path.join(work, 'common.d'), tmp)
     dest = os.path.join(v1.OUT, v1.MOD_DIR, folder, 'common.carc')
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     v1.run(v1.WSZST, 'create', os.path.join(work, 'common.d'), '-d', dest, '-o', '-q')
     return dest
 
 
-def write_xml():
+def alley_xml(mem, dev=True):
+    """'Alley' option: fixed themes replace Normal.carc; Random / Next add every theme file
+    to the disc and patch the stage loader. Every choice carries the texture hook (animations)."""
+    import build_alley as BA
+    if not os.path.isdir(BA.OUT_DIR):
+        return [], []
+    folder = f'/{v1.MOD_DIR}/alley'
+    choices, patches = [], []
+    for i, (theme, label, _) in enumerate(BA.THEMES):
+        ta, tv, _ = hook.theme_patch(i + 1)
+        choices.append(f'        <choice name="{label}"><patch id="alley_{theme}" /></choice>')
+        patches.append(f'  <patch id="alley_{theme}">\n'
+                       f'    <file disc="/Stage/BwlScene/Normal.carc" external="{folder}/{theme}.carc" />\n{mem}\n'
+                       f'    <memory offset="0x{ta:08X}" value="{tv.hex().upper()}" />\n  </patch>')
+    for theme, _, label in (BA.TESTS if dev else []):
+        choices.append(f'        <choice name="{label}"><patch id="alley_{theme}" /></choice>')
+        patches.append(f'  <patch id="alley_{theme}">\n'
+                       f'    <file disc="/Stage/BwlScene/Normal.carc" external="{folder}/{theme}.carc" />\n{mem}\n  </patch>')
+    files = '\n'.join(f'    <file disc="/Stage/BwlScene/{disc}" external="{folder}/{theme}.carc" create="true" />'
+                      for theme, _, disc in BA.THEMES)
+    assert [d for _, _, d in BA.THEMES] == hook.ALLEY_FILES
+    for mode, label, pid in (('V', 'Random', 'alley_random'),):
+        extra = '\n'.join(f'    <memory offset="0x{a:08X}" value="{d.hex().upper()}"' + (f' original="{o:08X}"' if o is not None else '') + ' />'
+                          for a, d, o in hook.alley_patches(mode)[1:])
+        choices.append(f'        <choice name="{label}"><patch id="{pid}" /></choice>')
+        patches.append(f'  <patch id="{pid}">\n{files}\n{mem}\n{extra}\n  </patch>')
+    opt = '      <option name="Alley">\n' + '\n'.join(choices) + '\n      </option>'
+    return [opt], patches
+
+
+def write_xml(dev=True, path=None):
+    """dev=False (releases) leaves out the diagnostic TEST alleys."""
     choices, patches = [], []
     mem = b2.memory_patches_xml()
     for label, folder, *_ in VARIANTS:
@@ -249,6 +317,16 @@ def write_xml():
         choices.append(f'        <choice name="{label}"><patch id="{folder}" /></choice>')
         patches.append(f'  <patch id="{folder}">\n'
                        f'    <file disc="/Common/BwlScene/common.carc" external="/{v1.MOD_DIR}/{folder}/common.carc" />\n  </patch>')
+    alley_opts, alley_patches = alley_xml(mem, dev)
+    patches += alley_patches
+    tchoices = []
+    for i, (label, _, _) in enumerate(hook.TRAIL_STYLES):
+        mem_t = '\n'.join(f'    <memory offset="0x{a:08X}" value="{d.hex().upper()}"' + (f' original="{o:08X}"' if o is not None else '') + ' />'
+                          for a, d, o in hook.trail_patches(i))
+        pid = 'ball_trail_' + ''.join(ch if ch.isalnum() else '_' for ch in label.lower()).strip('_').replace('__', '_')
+        tchoices.append(f'        <choice name="{label}"><patch id="{pid}" /></choice>')
+        patches.append(f'  <patch id="{pid}">\n{mem_t}\n  </patch>')
+    alley_opts.append('      <option name="Ball trail">\n' + '\n'.join(tchoices) + '\n      </option>')
     tier_opts = []
     for slot in range(4):
         ch = []
@@ -260,15 +338,16 @@ def write_xml():
         tier_opts.append(f'      <option name="P{slot + 1} Pro ball tier">\n' + '\n'.join(ch) + '\n      </option>')
     xml = ('<wiidisc version="1">\n  <id game="RZT">\n    <region type="E" />\n  </id>\n  <options>\n'
            '    <section name="WSR Custom Bowling Balls">\n      <option name="Ball mod">\n'
-           + '\n'.join(choices) + '\n      </option>\n' + '\n'.join(tier_opts) + '\n    </section>\n  </options>\n'
+           + '\n'.join(choices) + '\n      </option>\n' + ''.join(o + '\n' for o in alley_opts)
+           + '\n'.join(tier_opts) + '\n    </section>\n  </options>\n'
            + '\n'.join(patches) + '\n</wiidisc>\n')
-    p = os.path.join(v1.OUT, 'riivolution', f'{v1.MOD_DIR}.xml')
+    p = path or os.path.join(v1.OUT, 'riivolution', f'{v1.MOD_DIR}.xml')
     open(p, 'w').write(xml)
     return p
 
 
 def main():
-    keep = {f for _, f, *_ in VARIANTS} | {f for _, f in STATIC}
+    keep = {f for _, f, *_ in VARIANTS} | {f for _, f in STATIC} | {'alley'}
     od = os.path.join(v1.OUT, v1.MOD_DIR)
     for f in os.listdir(od):
         if os.path.isdir(os.path.join(od, f)) and f not in keep:

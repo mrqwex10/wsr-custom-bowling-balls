@@ -148,6 +148,7 @@ class Assets:
         self.gold = load_anim('gold')
         self.dia = load_anim('diamond')
         self.pool = {n: load_pool(n) for n in POOL}
+        self.alleys = load_alleys()
 
 
 def scene_title(A, t, dur):
@@ -164,9 +165,9 @@ def scene_title(A, t, dur):
         place_ball(c, ball, x, y)
     a = ease((t - 0.8) / 1.0) * fade_in_out(t, dur, 0, 0.5)
     text(c, (W / 2, 190), 'WSR CUSTOM BOWLING BALLS', 104, (255, 236, 200), alpha=a)
-    text(c, (W / 2, 300), '16 new bowling balls for Wii Sports Resort', 48, (225, 220, 255), bold=False, alpha=a)
+    text(c, (W / 2, 300), 'New balls, animated alleys and a ball trail for Wii Sports Resort', 48, (225, 220, 255), bold=False, alpha=a)
     a2 = ease((t - 2.0) / 0.8) * fade_in_out(t, dur, 0, 0.5)
-    text(c, (W / 2, H - 90), 'animated Pro orbs  •  Gold & Prismatic Diamond  •  random balls for everyone', 38, (190, 190, 215), bold=False, alpha=a2)
+    text(c, (W / 2, H - 90), 'animated alleys  •  Pro orbs  •  Gold & Prismatic Diamond  •  random balls', 38, (190, 190, 215), bold=False, alpha=a2)
     return c
 
 
@@ -233,10 +234,11 @@ def scene_install(A, t, dur):
     lines = ['1.  Copy two folders to your SD card',
              '2.  Open Wii Sports Resort in Riivolution / Friivolution',
              '3.  Ball mod:  "Pro: random orb each game"',
-             '4.  Earned it?  Set your Pro ball tier to Gold or Diamond']
+             '4.  Alley:  "Random"   Ball trail:  "Match ball (Auto)"',
+             '5.  Earned it?  Set your Pro ball tier to Gold or Diamond']
     for i, l in enumerate(lines):
-        ai = ease((t - 0.4 - 0.5 * i) / 0.5) * a
-        text(c, (330, 360 + i * 120), l, 50, (225, 225, 245), bold=False, alpha=ai, anchor='lm')
+        ai = ease((t - 0.4 - 0.45 * i) / 0.5) * a
+        text(c, (300, 330 + i * 105), l, 48, (225, 225, 245), bold=False, alpha=ai, anchor='lm')
     text(c, (W / 2, H - 90), 'Wii Sports Resort (USA)  •  no save data touched', 34, (160, 160, 190), bold=False, alpha=a)
     return c
 
@@ -249,15 +251,78 @@ def scene_end(A, t, dur):
         ball.putalpha(ball.getchannel('A').point(lambda v: int(v * a)))
         place_ball(c, ball, x, H * 0.48, glow=(255, 210, 120) if k == 0 else (190, 170, 255))
     text(c, (W / 2, 150), 'WSR CUSTOM BOWLING BALLS', 96, (255, 236, 200), alpha=a)
-    text(c, (W / 2, H * 0.48), 'v1.1', 44, (210, 210, 235), bold=False, alpha=a)
+    text(c, (W / 2, H * 0.48), 'v2.0', 44, (210, 210, 235), bold=False, alpha=a)
     text(c, (W / 2, H - 230), 'github.com/mrqwex10/wsr-custom-bowling-balls', 46, (225, 225, 255), bold=False, alpha=a)
     text(c, (W / 2, H - 150), 'made by qwex10', 40, (180, 180, 210), bold=False, alpha=a)
     return c
 
 
+ALLEY_TAG = {'cosmic': 'blacklight bowling in deep space', 'synthwave': 'an 80s neon grid at sunset',
+             'aurora': 'frozen lanes under the northern lights', 'lava': 'lava flows down the lane',
+             'whiteout': 'a bright alley with dark pins'}
+ALLEY_SRC = (2304, 1296)
+
+
+def load_alleys():
+    """{theme: {'throw': [frames], 'pins': [frames]}} rendered from the decoded release alley files (cached)."""
+    import alley_render as R
+    import build_alley as BA
+    import verify_alley as VA
+    out = {}
+    cache = os.path.join(OUT, 'alley')
+    os.makedirs(cache, exist_ok=True)
+    for theme, _, _ in BA.THEMES:
+        out[theme] = {}
+        tex = None
+        for cam_name, cam in (('throw', R.CAM_THROW), ('pins', R.CAM_PINS)):
+            frames = []
+            for k in range(8):
+                p = os.path.join(cache, f'{theme}_{cam_name}_{k}.png')
+                if not os.path.exists(p):
+                    if tex is None:
+                        tmp = os.path.join(OUT, 'alley_tex', theme)
+                        shutil.rmtree(tmp, ignore_errors=True)
+                        os.makedirs(tmp)
+                        tex = VA.textures(os.path.join(BA.OUT_DIR, theme + '.carc'), tmp)
+                    cur = {n: v[k % len(v)] for n, v in tex.items()}
+                    R.render(cur, cam=cam, W=3072, H=1728).resize(ALLEY_SRC, Image.LANCZOS).save(p)
+                frames.append(Image.open(p).convert('RGB'))
+            out[theme][cam_name] = frames
+    return out
+
+
+def scene_alley(theme, label):
+    def f(A, t, dur):
+        half = dur / 2
+        cam = 'throw' if t < half else 'pins'
+        tt = t if t < half else t - half
+        fr = A.alleys[theme][cam][int(t * 7) % 8]
+        z = 1.0 + 0.07 * ease(tt / half)                     # slow push-in
+        sw, sh = ALLEY_SRC[0] / z / 1.2, ALLEY_SRC[1] / z / 1.2
+        cx, cy = ALLEY_SRC[0] / 2, ALLEY_SRC[1] / 2
+        c = fr.crop((int(cx - sw / 2), int(cy - sh / 2), int(cx + sw / 2), int(cy + sh / 2))).resize((W, H), Image.LANCZOS)
+        a = fade_in_out(t, dur, 0.3, 0.3)
+        if a < 1:
+            c = Image.blend(Image.new('RGB', (W, H), (0, 0, 0)), c, a)
+        shade = Image.new('RGBA', (W, 230), (0, 0, 0, 0))
+        g = np.linspace(0, 170, 230).astype(np.uint8)
+        shade.putalpha(Image.fromarray(np.repeat(g[:, None], W, 1)))
+        c = c.convert('RGBA')
+        c.alpha_composite(shade, (0, H - 230))
+        text(c, (90, H - 120), label.upper(), 76, (255, 255, 255), alpha=a, anchor='lm')
+        text(c, (92, H - 55), ALLEY_TAG[theme], 38, (215, 215, 235), bold=False, alpha=a, anchor='lm')
+        return c
+    return f
+
+
 def timeline(A):
+    import build_alley as BA
     T = [(scene_title, 6.0),
-         (scene_card('ANIMATED PRO ORBS', 'for players at Pro rank (1000+ skill)', (0.12, 0.05, 0.20)), 2.4)]
+         (scene_card('NEW: ALLEY THEMES', 'five animated alleys  -  or let Random pick one', (0.10, 0.04, 0.16)), 2.6)]
+    for theme, label, _ in BA.THEMES:
+        T.append((scene_alley(theme, label), 4.2))
+    T += [(scene_card('PLUS: BALL TRAIL', 'a particle trail made for every ball', (0.05, 0.06, 0.14)), 2.6),
+          (scene_card('ANIMATED PRO ORBS', 'for players at Pro rank (1000+ skill)', (0.12, 0.05, 0.20)), 2.4)]
     hues = {'holo': ((0.10, 0.06, 0.22), (200, 150, 255)), 'venom': ((0.06, 0.08, 0.05), (170, 210, 60)),
             'inferno': ((0.16, 0.05, 0.04), (255, 120, 40)), 'blackhole': ((0.06, 0.03, 0.12), (220, 60, 200)),
             'arcane': ((0.08, 0.03, 0.16), (170, 80, 255)), 'dragoneye': ((0.14, 0.04, 0.03), (255, 110, 30))}

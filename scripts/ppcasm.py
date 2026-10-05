@@ -5,6 +5,10 @@ import struct
 def _r(x):
     return int(str(x).lower().lstrip('r'))
 
+def _f(x):
+    return int(str(x).lower().lstrip('f'))
+
+
 def _s16(v):
     assert -0x8000 <= v <= 0x7FFF, v
     return v & 0xFFFF
@@ -65,6 +69,12 @@ class Asm:
         # loads/stores: op rD, d(rA)  -> args (rD, d, rA)
         mem = {'lwz': 32, 'stw': 36, 'lhz': 40, 'lha': 42, 'sth': 44, 'stwu': 37, 'lbz': 34, 'stb': 38}
         if op in mem: return D(mem[op], a[0], a[2], _s16(a[1]))
+        if op in ('lfs', 'stfs'):                                                   # lfs f1, d, rA
+            return ({'lfs': 48, 'stfs': 52}[op] << 26) | (_f(a[0]) << 21) | (_r(a[2]) << 16) | _s16(a[1])
+        if op in ('fsubs', 'fadds'):                                                # fsubs fD, fA, fB
+            return (59 << 26) | (_f(a[0]) << 21) | (_f(a[1]) << 16) | (_f(a[2]) << 11) | ({'fsubs': 20, 'fadds': 21}[op] << 1)
+        if op == 'fmadds':                                                          # fmadds fD, fA, fC, fB = fA*fC + fB
+            return (59 << 26) | (_f(a[0]) << 21) | (_f(a[1]) << 16) | (_f(a[3]) << 11) | (_f(a[2]) << 6) | (29 << 1)
         if op == 'addi': return D(14, a[0], a[1], _s16(a[2]))
         if op == 'li': return D(14, a[0], 0, _s16(a[1]))
         if op == 'lis': return D(15, a[0], 0, _u16(a[1]) if a[1] >= 0 else _s16(a[1]))

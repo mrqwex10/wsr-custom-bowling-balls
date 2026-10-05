@@ -15,10 +15,12 @@ from your **own** copy of Wii Sports Resort (USA, RZTE01 Rev 1).
 
 ## 2. Game files
 
-Extract the Bowling archive and the main executable from your disc image:
+Extract the Bowling archives and the main executable from your disc image:
 
 ```
-tools/bin/wit extract YOUR_GAME.wbfs work/disc --files "+/files/Common/BwlScene/common.carc" --files "+/sys/main.dol" --psel data
+tools/bin/wit extract YOUR_GAME.wbfs work/disc --files "+/files/Common/BwlScene/common.carc" \
+    --files "+/files/Stage/BwlScene/Normal.carc" --files "+/files/Effect/BwlScene/effect.carc" \
+    --files "+/sys/main.dol" --psel data
 ```
 
 ## 3. Render the artwork
@@ -34,10 +36,17 @@ for n in 16 10 8; do $P scripts/make_orbs.py gold,diamond $n; done
 ## 4. Build and test
 
 ```
+$P scripts/build_alley.py     # -> output/WSR_ball_mod/alley/*.carc + trail/effect.carc (alley art is generated on the fly)
 $P scripts/build4.py          # -> output/riivolution/WSR_ball_mod.xml + output/WSR_ball_mod/*/common.carc
 $P scripts/test_hook.py       # runs the patched GXLoadTexObj from main.dol in a PowerPC emulator
+$P scripts/test_alley.py      # alley loader (Random / Next) + ball trail, run against main.dol's real code
 $P scripts/verify4.py         # end-to-end: decodes what the GPU would receive for every ball slot
+$P scripts/verify_alley.py    # decodes every built alley (and animation frame) and renders it -> work/verify_alley
+$P scripts/make_release.py 2.0   # -> dist/WSR_Custom_Bowling_Balls_v2.0.zip
 ```
+
+The first alley build unpacks the stock alley from `work/disc` into `work/stage` (models and textures).
+`scripts/alley_render.py` is a small software renderer of the alley model, used for the previews.
 
 Copy `output/riivolution` and `output/WSR_ball_mod` to your SD card (or use `scripts/install_sd.sh`).
 
@@ -50,3 +59,9 @@ Copy `output/riivolution` and `output/WSR_ball_mod` to your SD card (or use `scr
 | `make_pool.py`, `make_identity.py` | Regular ball designs |
 | `build4.py` (+ `build*.py`) | Packs textures into the archive, writes tags and the Riivolution XML |
 | `test_hook.py`, `verify4.py` | Emulator tests |
+| `make_alley.py` | Alley theme art (lanes, arrows, gutters, screens, ceiling, pins) and animation frames |
+| `build_alley.py` | Packs a theme into the stage archive (original formats / mips, BANM tags, light tints) |
+| `alley_render.py`, `alley_previews.py`, `alley_promo.py` | Renders the alley from the game's camera for previews |
+| `test_alley.py`, `verify_alley.py` | Alley loader + trail emulator tests, decoded-alley check |
+| `breft.py` | Reads the Bowling effect textures (ball trail research) |
+| `make_release.py` | Builds the release zip |
